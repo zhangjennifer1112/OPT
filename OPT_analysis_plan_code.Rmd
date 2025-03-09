@@ -1,0 +1,73 @@
+---
+title: "OPT analysis plan"
+author: "Jennifer Zhang"
+date: "2025-03-09"
+output: pdf_document
+---
+
+# Setup
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(modelsummary)
+library(logistf)
+
+# Load data for preprocessing
+df <- medicaldata::opt %>%
+mutate_if(is.factor,as.character)
+
+# Create new preterm variables
+df2 <- df %>%
+mutate(ExtremelyPreterm = ifelse(GA.at.outcome/7 < 28, 1,0),
+VeryPreterm = ifelse(GA.at.outcome/7 < 32, 1,0),
+LatePreterm = ifelse(GA.at.outcome/7 < 37, 1,0))
+
+# Select variables of interest
+df3 <- df2 %>%
+select(PID,Clinic,Group,Birth.outcome,GA.at.outcome,
+ExtremelyPreterm,VeryPreterm,LatePreterm,
+N.qualifying.teeth,BL.GE,BL..BOP,BL.PD.avg,BL.CAL.avg,BL.Calc.I,BL.Pl.I)
+```
+
+# Variable Description
+```{r}
+# Extremely preterm birth (<28 weeks)
+tab = with(df3,table(Group,ExtremelyPreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Extremely Preterm","Extremely Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab)
+
+# Very preterm birth (<32 weeks)
+tab = with(df3,table(Group,VeryPreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab, "(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Very Preterm","Very Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab)
+
+# Late preterm birth(<37 weeks)
+tab = with(df3, table(Group,LatePreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("Normal","Late Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab)
+
+# Histogram of gestational age
+hist(df3$GA.at.outcome/7,breaks = 14:47, main = "Gestational age (Weeks)", xlab = "GA")
+abline(v=28, col = "red") #extremely preterm
+abline(v=32, col = "red") #very preterm
+abline(v=37, col = "red") #late preterm
+
+# Summary of gestational age and baseline periodontal summaries
+dfoutput <- datasummary(GA.at.outcome/7 + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.CAL.avg + BL.Calc.I + BL.Pl.I ~ Group*Mean + Group*SD, data = df3, output = "data.frame")
+
+rownames(dfoutput) <- c("Gestational Age (Weeks)","Number of Teeth meeting
+OPT","Avg Gingival Index","% Bleeding on Probing","Avg Pocket Depth","Avg
+Clinical Attachment Level","Avg Calculus Index","Avg Plaque Index")
+
+knitr::kable(dfoutput[,2:5])
+```
+
