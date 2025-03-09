@@ -1,0 +1,209 @@
+---
+title: "OPT Final Code"
+author: "Jennifer Zhang"
+date: "2025-03-09"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r echo=FALSE}
+library(survival)
+library(survminer)
+```
+
+# Setup
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(modelsummary)
+library(logistf)
+
+# Load data for preprocessing
+df <- medicaldata::opt %>%
+mutate_if(is.factor,as.character)
+
+# Create new preterm variables
+df2 <- df %>%
+mutate(ExtremelyPreterm = ifelse(GA.at.outcome/7 < 28, 1,0),
+VeryPreterm = ifelse(GA.at.outcome/7 < 32, 1,0),
+LatePreterm = ifelse(GA.at.outcome/7 < 37, 1,0))
+
+# Select variables of interest
+df3 <- df2 %>%
+select(PID,Clinic,Group,Birth.outcome,GA.at.outcome,
+ExtremelyPreterm,VeryPreterm,LatePreterm,
+N.qualifying.teeth,BL.GE,BL..BOP,BL.PD.avg,BL.CAL.avg,BL.Calc.I,BL.Pl.I)
+```
+
+# Variable Description
+```{r}
+# Extremely preterm birth (<28 weeks)
+tab = with(df3,table(Group,ExtremelyPreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Extremely Preterm","Extremely Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab)
+
+# Very preterm birth (<32 weeks)
+tab = with(df3,table(Group,VeryPreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab, "(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Very Preterm","Very Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab)
+
+# Late preterm birth(<37 weeks)
+tab = with(df3, table(Group,LatePreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("Normal","Late Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab)
+
+# Histogram of gestational age
+hist(df3$GA.at.outcome/7,breaks = 14:47, main = "Gestational age (Weeks)", xlab = "GA")
+abline(v=28, col = "red") #extremely preterm
+abline(v=32, col = "red") #very preterm
+abline(v=37, col = "red") #late preterm
+
+# Summary of gestational age and baseline periodontal summaries
+dfoutput <- datasummary(GA.at.outcome/7 + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.CAL.avg + BL.Calc.I + BL.Pl.I ~ Group*Mean + Group*SD + Group*N, data = df3, output = "data.frame")
+
+rownames(dfoutput) <- c("Gestational Age (Weeks)","Number of Teeth meeting
+OPT","Avg Gingival Index","% Bleeding on Probing","Avg Pocket Depth","Avg
+Clinical Attachment Level","Avg Calculus Index","Avg Plaque Index")
+
+# Summary table for control and treatment groups
+# C = control, T = treatment
+dfoutput <- dfoutput %>% mutate(`C / Mean` = as.numeric(`C / Mean`),
+                                `T / Mean` = as.numeric(`T / Mean`),
+                                `C / SD` = as.numeric(`C / SD`),
+                                `T / SD` = as.numeric(`T / SD`),
+                                `C / N` = as.numeric(`C / N`), 
+                                `T / N` = as.numeric(`T / N`))
+dfoutput$`p-value` <- round(with(dfoutput,pnorm( (`C / Mean` - `T / Mean`)/sqrt((`C / SD`+`T / SD`)/2 * (1/`C / N`+`T / N` )) )),3)
+
+knitr::kable(dfoutput[,c(2:5,8)], caption = "Table 4: Descriptive statistics
+table")
+```
+
+# PART 1: Survival Analysis
+```{r}
+cox_fit3 <- coxph(Surv(time = GA.at.outcome, event = LatePreterm) ~ Group,
+data = df3)
+
+cox_fit3.1 <- coxph(Surv(time = GA.at.outcome, event = LatePreterm) ~ Group +
+Clinic, data = df3)
+
+cox_fit3.2 <- coxph(Surv(time = GA.at.outcome, event = LatePreterm) ~ Group +
+Clinic + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3)
+
+anova(cox_fit3,cox_fit3.1)
+anova(cox_fit3.1,cox_fit3.2)
+cox.zph(cox_fit3.1)
+scox_fit3.1 <- summary(cox_fit3.1)
+
+knitr::kable(round(scox_fit3.1$coefficients,3), caption = "Table 5: Cox PH
+model summary for late preterm births with the control group and KY as the
+references")
+
+newdf <- data.frame(Group = c("C","T"), Clinic = c("NY","MN"))
+coxplot <- ggsurvplot(survfit(cox_fit3, newdata = newdf), data = df3, ggtheme = theme_minimal(), legend.labs = c("Group: C | Clinic: NY","Group: T | Clinic: MN"), title = "Figure 2: Cox Survival Probability Plot", xlim = c(80,300), ylim = c(.8,1))
+
+coxplot$plot + geom_vline(xintercept = 37*7, col = "red")
+```
+
+# PART 2: Firth Logistic Regression
+```{r}
+df3 <- df3 %>% filter(Birth.outcome == "Live birth" | Birth.outcome == "Non-live birth") %>% mutate(GroupBi = ifelse(Group == "T",1,0))
+
+propensity_fit <- glm(GroupBi ~ Clinic + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3, family = binomial)
+propensity <- predict(propensity_fit, type = "response")
+ws <- ifelse(df3$Group == "T", 1/(propensity), 1/(1-propensity))
+```
+
+## Extremely Preterm
+```{r}
+tab = with(df3,table(Group,ExtremelyPreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Extremely Preterm","Extremely Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab, caption = "Table 6: Contingency table for extremely
+preterm birth after removing elective abortion and loss to follow-up")
+
+
+#firth_fit1 <- glm(ExtremelyPreterm ~ Group + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3, weights = ws, family = binomial)
+
+firth_fit1.1 <- logistf(ExtremelyPreterm ~ Group + Clinic +
+N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data
+= df3, weights = ws)
+
+#summary(firth_fit1)
+#summary(firth_fit1.1)
+
+output_df_EPreterm <- data.frame(Coefficients = round(exp(firth_fit1.1$coefficients),3), lowerCI = round(exp(firth_fit1.1$ci.lower),3), upperCI = round(exp(firth_fit1.1$ci.upper),3), pvalue = round(firth_fit1.1$prob,3))
+
+knitr::kable(output_df_EPreterm, caption = "Table 7: Firth logisitic
+regression of extremely preterm including 95% confidence intervals and pvalue
+computed using profile penalized log-likelihood")
+```
+
+## Very Preterm
+```{r}
+tab = with(df3,table(Group,VeryPreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Very Preterm","Very Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab, caption = "Table 8: Contingency table for very preterm
+birth after removing elective abortion and loss to follow-up")
+
+#firth_fit2 <- glm(VeryPreterm ~ Group + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3, weights = ws, family = binomial)
+firth_fit2.1 <- logistf(VeryPreterm ~ Group + Clinic + N.qualifying.teeth +
+BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3, weights = ws)
+
+#summary(firth_fit2)
+#summary(firth_fit2.1)
+
+output_df_VPreterm <- data.frame(Coefficients = round(exp(firth_fit2.1$coefficients),3), lowerCI = round(exp(firth_fit2.1$ci.lower),3), upperCI = round(exp(firth_fit2.1$ci.upper),3), pvalue = round(firth_fit2.1$prob,3))
+knitr::kable(output_df_VPreterm, caption = "Table 9: Firth logisitic
+regression of very preterm including 95% confidence intervals and pvalue
+computed using profile penalized log-likelihood")
+```
+
+## Late Preterm
+```{r}
+tab = with(df3,table(Group,LatePreterm))
+ptab = round(prop.table(tab),2)
+ctab = matrix(paste0(tab,"(",100*ptab,"%)"),ncol = 2, nrow = 2)
+colnames(ctab) <- c("NOT Preterm","Late Preterm")
+rownames(ctab) <- c("Control","Treatment")
+knitr::kable(ctab, caption = "Table 10: Contingency table for late preterm
+birth after removing elective abortion and loss to follow-up")
+
+
+#firth_fit3 <- glm(ExtremelyPreterm ~ Group + N.qualifying.teeth + BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3, weights = ws, family = binomial)
+firth_fit3.1 <- logistf(LatePreterm ~ Group + Clinic + N.qualifying.teeth +
+BL.GE + BL..BOP + BL.PD.avg + BL.Calc.I + BL.Pl.I, data = df3, weights = ws)
+
+#summary(firth_fit3)
+#summary(firth_fit3.1)
+
+output_df_LPreterm <- data.frame(Coefficients = round(exp(firth_fit3.1$coefficients),3), lowerCI = round(exp(firth_fit3.1$ci.lower),3), upperCI = round(exp(firth_fit3.1$ci.upper),3), pvalue = round(firth_fit3.1$prob,3))
+knitr::kable(output_df_LPreterm, caption = "Table 11: Firth logisitic
+regression of late preterm including 95% confidence intervals and pvalue
+computed using profile penalized log-likelihood")
+```
+
+## Results
+```{r}
+output_df_Preterm <- data.frame(ExtremelyPreterm = round(exp(firth_fit1.1$coefficients),3), 
+                                VeryPreterm = round(exp(firth_fit2.1$coefficients),3), 
+                                LatePreterm = round(exp(firth_fit3.1$coefficients),3))
+
+knitr::kable(output_df_Preterm, label = "Table 12: Coefficients of preterm
+categories")
+```
+
